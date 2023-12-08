@@ -10,8 +10,9 @@ import amd.rocal.types as types
 import sys
 import os, glob
 
-val_cases_list = ['00000', '00003', '00005', '00006', '00012', '00024', '00034', '00041', '00044', '00049', '00052', '00056', '00061', '00065', '00066', '00070', '00076', '00078', '00080', '00084',
-                  '00086', '00087', '00092', '00111', '00112', '00125', '00128', '00138', '00157', '00160', '00161', '00162', '00169', '00171', '00176', '00185', '00187', '00189', '00198', '00203', '00206', '00207']
+
+MEAN = [0.026144592091441154, -88.3379898071289, -84.62094116210938, -78.56366729736328, -77.72217559814453, 7.33015557974337e-12, 48330.79296875, 87595.4296875, 183.57638549804688, 208.38265991210938, -7.185957863625792e-19, 109.64270782470703, 94.19403076171875, -0.37584438920021057, 9952.041015625, 20.362579345703125]
+STDDEV = [108.9710922241211, 174.1948699951172, 173.99221801757812, 155.323486328125, 158.25418090820312, 0.14563894271850586, 58919.42578125, 24443.921875, 64.71000671386719, 77.63092041015625, 3.7348792830016464e-05, 242.97598266601562, 237.60250854492188, 5726.51611328125, 2953.1953125, 51.31494903564453]
 
 def load_data(path, files_pattern):
     data = sorted(glob.glob(os.path.join(path, files_pattern)))
@@ -19,19 +20,10 @@ def load_data(path, files_pattern):
     return data
 
 def get_data_split(path: str):
-    imgs = load_data(path, "*_x.npy")
-    lbls = load_data(path, "*_y.npy")
+    imgs = load_data(path, "data-*.npy")
+    lbls = load_data(path, "label-*.npy")
     assert len(imgs) == len(lbls), f"Found {len(imgs)} volumes but {len(lbls)} corresponding masks"
-    imgs_train, lbls_train, imgs_val, lbls_val = [], [], [], []
-    for (case_img, case_lbl) in zip(imgs, lbls):
-        if case_img.split("_")[-2] in val_cases_list:
-            imgs_val.append(case_img)
-            lbls_val.append(case_lbl)
-        else:
-            imgs_train.append(case_img)
-            lbls_train.append(case_lbl)
-
-    return imgs_train, imgs_val, lbls_train, lbls_val
+    return imgs, lbls
 
 def main():
     if  len(sys.argv) < 3:
@@ -45,63 +37,52 @@ def main():
     except OSError as error:
         print(error)
     data_path = sys.argv[1]
-    if(sys.argv[2] == "cpu"):
+    data_path1 = sys.argv[2]
+    if(sys.argv[3] == "cpu"):
         rocal_cpu = True
     else:
         rocal_cpu = False
-    batch_size = int(sys.argv[3])
+    batch_size = int(sys.argv[4])
     num_threads = 8
     device_id = 0
     local_rank = 0
     world_size = 1
     random_seed = random.SystemRandom().randint(0, 2**32 - 1)
-    x_train, x_val, y_train, y_val = get_data_split(data_path)
+    x_train, y_train = get_data_split(data_path)
+    x_val, y_val = get_data_split(data_path1)
 
     import time
     start = time.time()
-    pipeline = Pipeline(batch_size=batch_size, num_threads=num_threads, device_id=device_id, seed=random_seed, rocal_cpu=rocal_cpu, prefetch_queue_depth=2)
+    pipeline = Pipeline(batch_size=batch_size, num_threads=num_threads, device_id=device_id, seed=random_seed, rocal_cpu=rocal_cpu, prefetch_queue_depth=6)
 
     with pipeline:
         numpy_reader_output = fn.readers.numpy(file_root=data_path, files=x_train, shard_id=local_rank, num_shards=world_size, random_shuffle=True, seed=random_seed+local_rank)
-        numpy_reader_output1 = fn.readers.numpy(file_root=data_path, files=y_train, shard_id=local_rank, num_shards=world_size, random_shuffle=True, seed=random_seed+local_rank)
-        data_output = fn.set_layout(numpy_reader_output, output_layout=types.NCDHW)
-        label_output = fn.set_layout(numpy_reader_output1, output_layout=types.NCDHW)
-        [roi_start, roi_end] = fn.random_object_bbox(label_output, format="start_end", k_largest=2, foreground_prob=0.4)
-        anchor = fn.roi_random_crop(label_output, roi_start=roi_start, roi_end=roi_end, crop_shape=(1, 128, 128, 128))
-        data_sliced_output = fn.slice(data_output, anchor=anchor, shape=(1,128,128,128), output_layout=types.NCDHW, output_dtype=types.FLOAT)
-        label_sliced_output = fn.slice(label_output, anchor=anchor, shape=(1,128,128,128), output_layout=types.NCDHW, output_dtype=types.UINT8)       
-        hflip = fn.random.coin_flip(probability=0.33)
-        vflip = fn.random.coin_flip(probability=0.33)
-        dflip = fn.random.coin_flip(probability=0.33)
-        data_flip_output = fn.flip(data_sliced_output, horizontal=hflip, vertical=vflip, depth=dflip, output_layout=types.NCDHW, output_dtype=types.FLOAT)
-        label_flip_output = fn.flip(label_sliced_output, horizontal=hflip, vertical=vflip, depth=dflip, output_layout=types.NCDHW, output_dtype=types.UINT8)
-        brightness = fn.random.uniform(range=[0.7, 1.3])
-        add_brightness = fn.random.coin_flip(probability=0.1)
-        brightness_output = fn.brightness(data_flip_output, brightness=brightness, brightness_shift=0.0, conditional_execution=add_brightness, output_layout=types.NCDHW, output_dtype=types.FLOAT)
-        add_noise = fn.random.coin_flip(probability=0.5)
-        std_dev = fn.random.uniform(range=[0.0, 0.1])
-        noise_output = fn.gaussian_noise(brightness_output, mean=0.0, std_dev=std_dev, conditional_execution=add_noise, output_layout=types.NCDHW, output_dtype=types.FLOAT)
-        pipeline.set_outputs(noise_output, label_flip_output)
+        label_output = fn.readers.numpy(file_root=data_path, files=y_train, shard_id=local_rank, num_shards=world_size, random_shuffle=True, seed=random_seed+local_rank)
+        data_output = fn.set_layout(numpy_reader_output, output_layout=types.NHWC)
+        normalized_output = fn.normalize(data_output, axes=[0,1], mean=MEAN, stddev=STDDEV, output_layout=types.NHWC, output_dtype=types.FLOAT)
+        transposed_output = fn.transpose(normalized_output, perm=[2,1,0], output_layout=types.NCHW, output_dtype=types.FLOAT)
+        pipeline.set_outputs(transposed_output, label_output)
 
     pipeline.build()
 
     pipeline1 = Pipeline(batch_size=batch_size, num_threads=num_threads, device_id=device_id, seed=random_seed, rocal_cpu=rocal_cpu, prefetch_queue_depth=6)
 
     with pipeline1:
-        numpy_reader_output = fn.readers.numpy(file_root=data_path, files=x_val, shard_id=local_rank, num_shards=world_size)
-        numpy_reader_output1 = fn.readers.numpy(file_root=data_path, files=y_val, shard_id=local_rank, num_shards=world_size)
-        data_output = fn.set_layout(numpy_reader_output, output_layout=types.NCDHW)
-        label_output = fn.set_layout(numpy_reader_output1, output_layout=types.NCDHW)
-        pipeline1.set_outputs(data_output, label_output)
+        numpy_reader_output = fn.readers.numpy(file_root=data_path, files=x_val, shard_id=local_rank, num_shards=world_size, seed=random_seed+local_rank)
+        label_output = fn.readers.numpy(file_root=data_path, files=y_val, shard_id=local_rank, num_shards=world_size, seed=random_seed+local_rank)
+        data_output = fn.set_layout(numpy_reader_output, output_layout=types.NHWC)
+        normalized_output = fn.normalize(data_output, axes=[0,1], mean=MEAN, stddev=STDDEV, output_layout=types.NHWC, output_dtype=types.FLOAT)
+        transposed_output = fn.transpose(normalized_output, perm=[2,1,0], output_layout=types.NCHW, output_dtype=types.FLOAT)
+        pipeline1.set_outputs(transposed_output, label_output)
 
     pipeline1.build()
     
     numpyIteratorPipeline = ROCALNumpyIterator(pipeline, device='cpu' if rocal_cpu else 'gpu')
     print(len(numpyIteratorPipeline))
-    valNumpyIteratorPipeline = ROCALNumpyIterator(pipeline1, device='cpu' if rocal_cpu else 'gpu', return_roi=True)
+    valNumpyIteratorPipeline = ROCALNumpyIterator(pipeline1, device='cpu' if rocal_cpu else 'gpu')
     print(len(valNumpyIteratorPipeline))
     cnt = 0
-    for epoch in range(100):
+    for epoch in range(2):
         print("+++++++++++++++++++++++++++++EPOCH+++++++++++++++++++++++++++++++++++++",epoch)
         for i , it in enumerate(numpyIteratorPipeline):
             print(i, it[0].shape, it[1].shape)
