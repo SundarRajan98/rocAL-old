@@ -252,12 +252,13 @@ def contrast(*inputs, contrast=None, contrast_center=None, device=None, output_l
     return (contrast_image)
 
 
-def flip(*inputs, horizontal=0, vertical=0, device=None, output_layout=types.NHWC, output_dtype=types.UINT8):
+def flip(*inputs, horizontal=0, vertical=0, depth=0, device=None, output_layout=types.NHWC, output_dtype=types.UINT8):
     """!Flip images horizontally and/or vertically based on inputs.
 
         @param inputs                                                                 the input image passed to the augmentation
         @param horizontal (int, optional, default = 0)                                flip the horizontal dimension
         @param vertical (int, optional, default = 0)                                  flip the vertical dimension
+        @param depth (int, optional, default = 0)                                     flip the depth dimension
         @param device (string, optional, default = None)                              Parameter unused for augmentation
         @param output_layout (int, optional, default = types.NHWC)                    tensor layout for the augmentation output
         @param output_dtype (int, optional, default = types.UINT8)                    tensor dtype for the augmentation output
@@ -268,10 +269,12 @@ def flip(*inputs, horizontal=0, vertical=0, device=None, output_layout=types.NHW
         horizontal, int) else horizontal
     vertical = b.createIntParameter(
         vertical) if isinstance(vertical, int) else vertical
+    depth = b.createIntParameter(
+        depth) if isinstance(depth, int) else depth
 
     # pybind call arguments
     kwargs_pybind = {"input_image": inputs[0],
-                     "is_output": False, "horizontal": horizontal, "vertical": vertical, "output_layout": output_layout, "output_dtype": output_dtype}
+                     "is_output": False, "horizontal": horizontal, "vertical": vertical, "depth": depth, "output_layout": output_layout, "output_dtype": output_dtype}
     flip_image = b.flip(Pipeline._current_pipeline._handle,
                         *(kwargs_pybind.values()))
     return (flip_image)
@@ -822,6 +825,32 @@ def crop(*inputs, crop=[0, 0], crop_pos_x=0.5, crop_pos_y=0.5, crop_pos_z=0.5,
     return (cropped_image)
 
 
+def slice(*inputs, anchor = [], shape = [], dtype = types.FLOAT, end = [], fill_values = [0.0],  out_of_bounds_policy = types.PAD, device=None, output_layout=types.NHWC, output_dtype=types.UINT8):
+    """
+    The slice can be specified by proving the start and end coordinates, or start coordinates and shape of the slice. Both coordinates and shapes can be provided in absolute or relative terms.
+
+    The slice arguments can be specified by the following named arguments:
+
+    start: Slice start coordinates (absolute)
+
+    rel_start: Slice start coordinates (relative)
+
+    end: Slice end coordinates (absolute)
+
+    rel_end: Slice end coordinates (relative)
+
+    shape: Slice shape (absolute)
+
+    rel_shape: Slice shape (relative)
+
+    """
+
+    kwargs_pybind = {"input": inputs[0], "is_output": False, "anchor": anchor, "shape": shape, "fill_values": fill_values,
+                     "out_of_bounds_policy": out_of_bounds_policy, "output_layout": output_layout, "output_dtype": output_dtype}
+    slice_output = b.slice(Pipeline._current_pipeline._handle ,*(kwargs_pybind.values()))
+    return slice_output
+
+
 def color_twist(*inputs, brightness=1.0, contrast=1.0, hue=0.0,
                 saturation=1.0, device=None, output_layout=types.NHWC, output_dtype=types.UINT8):
     """!Adjusts the brightness, hue and saturation of the images.
@@ -1055,3 +1084,62 @@ def box_iou_matcher(*inputs, anchors, criteria=0.5, high_threshold=0.5,
         Pipeline._current_pipeline._handle, *(kwargs_pybind.values()))
     Pipeline._current_pipeline._box_iou_matcher = True
     return (box_iou_matcher, [])
+
+
+def set_layout(*inputs, output_layout=types.NHWC):
+    """!Adjusts brightness of the image.
+
+        @param inputs                                                                 the input image passed to the augmentation
+        @param output_layout (int, optional, default = types.NHWC)                    tensor layout for the augmentation output
+
+        @return    Tensor with required output layout
+    """
+    # pybind call arguments
+    kwargs_pybind = {"input_image": inputs[0], "output_layout": output_layout}
+    new_output = b.setLayout(
+        Pipeline._current_pipeline._handle, *(kwargs_pybind.values()))
+    return (new_output)
+
+
+def gaussian_noise(*inputs, mean=0.0, std_dev=1.0, seed=0, device=None, output_layout=types.NHWC, output_dtype=types.UINT8):
+    """!Applies Gaussian noise to the input image.
+
+        @param inputs (list)                                                          The input image to which salt-and-pepper noise is applied.
+        @param mean (float, optional, default = 0.0)                                  Mean used for noise generation. Default is 0.0.
+        @param std_dev (float, optional, default = 1.0)                               Standard deviation used for noise generation. Default is 1.0.
+        @param seed (int, optional, default = 0)                                      Random seed. Default is 0.
+        @param device (string, optional, default = None)                              Parameter unused for augmentation
+        @param output_layout (int, optional, default = types.NHWC)                    Tensor layout for the augmentation output. Default is types.NHWC.
+        @param output_dtype (int, optional, default = types.UINT*)                    Tensor dtype for the augmentation output. Default is types.UINT8.
+
+        @return    images with Gaussian noise added.
+    """
+    mean = b.createFloatParameter(
+        mean) if isinstance(mean, float) else mean
+    std_dev = b.createFloatParameter(
+        std_dev) if isinstance(std_dev, float) else std_dev
+
+    # pybind call arguments
+    kwargs_pybind = {"input_image": inputs[0], "is_output": False, "mean": mean, "std_dev": std_dev,
+                     "seed": seed, "output_layout": output_layout, "output_dtype": output_dtype}
+    noise_added_image = b.gaussianNoise(
+        Pipeline._current_pipeline._handle, *(kwargs_pybind.values()))
+    return (noise_added_image)
+
+def roi_random_crop(*inputs, roi_start, roi_end, crop_shape):
+    # pybind call arguments
+    kwargs_pybind = {"input_image": inputs[0], "roi_start": roi_start, "roi_end": roi_end, "crop_shape": crop_shape}
+    anchor = b.roiRandomCrop(Pipeline._current_pipeline._handle, *(kwargs_pybind.values()))
+    return (anchor)
+
+def random_object_bbox(*inputs, format='anchor_shape', background=0, cache_objects=False, classes=[], foreground_prob=1.0, ignore_class=False, k_largest=-1, seed=0, threshold=[]):
+    # pybind call arguments
+    kwargs_pybind = {"input_image": inputs[0], "format": format, "k_largest": k_largest, "foreground_prob": foreground_prob}
+    selected_roi = b.randomObjectBbox(Pipeline._current_pipeline._handle, *(kwargs_pybind.values()))
+    if format == "box":
+        return (selected_roi)
+    elif format == "anchor_shape" or format == "start_end":
+        return (selected_roi[0], selected_roi[1])
+    else:
+        print('Wrong format passed to random_object_bbox')
+        return ()
