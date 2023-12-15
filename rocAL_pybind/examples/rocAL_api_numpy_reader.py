@@ -56,30 +56,30 @@ def main():
     pipeline = Pipeline(batch_size=batch_size, num_threads=num_threads, device_id=device_id, seed=random_seed, rocal_cpu=rocal_cpu, prefetch_queue_depth=6)
 
     with pipeline:
-        numpy_reader_output = fn.readers.numpy(file_root=data_path, files=x_train, shard_id=local_rank, num_shards=world_size, random_shuffle=True, seed=random_seed+local_rank)
-        label_output = fn.readers.numpy(file_root=data_path, files=y_train, shard_id=local_rank, num_shards=world_size, random_shuffle=True, seed=random_seed+local_rank)
+        numpy_reader_output = fn.readers.numpy(file_root=data_path, files=x_train, shard_id=local_rank, num_shards=world_size)
+        label_output = fn.readers.numpy(file_root=data_path, files=y_train, shard_id=local_rank, num_shards=world_size)
         data_output = fn.set_layout(numpy_reader_output, output_layout=types.NHWC)
         normalized_output = fn.normalize(data_output, axes=[0,1], mean=MEAN, stddev=STDDEV, output_layout=types.NHWC, output_dtype=types.FLOAT)
-        transposed_output = fn.transpose(normalized_output, perm=[2,1,0], output_layout=types.NCHW, output_dtype=types.FLOAT)
+        transposed_output = fn.transpose(normalized_output, perm=[2,0,1], output_layout=types.NCHW, output_dtype=types.FLOAT)
         pipeline.set_outputs(transposed_output, label_output)
 
     pipeline.build()
 
-    pipeline1 = Pipeline(batch_size=batch_size, num_threads=num_threads, device_id=device_id, seed=random_seed, rocal_cpu=rocal_cpu, prefetch_queue_depth=6)
+    val_pipeline = Pipeline(batch_size=batch_size, num_threads=num_threads, device_id=device_id, seed=random_seed, rocal_cpu=rocal_cpu, prefetch_queue_depth=6)
 
-    with pipeline1:
+    with val_pipeline:
         numpy_reader_output = fn.readers.numpy(file_root=data_path, files=x_val, shard_id=local_rank, num_shards=world_size, seed=random_seed+local_rank)
         label_output = fn.readers.numpy(file_root=data_path, files=y_val, shard_id=local_rank, num_shards=world_size, seed=random_seed+local_rank)
         data_output = fn.set_layout(numpy_reader_output, output_layout=types.NHWC)
         normalized_output = fn.normalize(data_output, axes=[0,1], mean=MEAN, stddev=STDDEV, output_layout=types.NHWC, output_dtype=types.FLOAT)
-        transposed_output = fn.transpose(normalized_output, perm=[2,1,0], output_layout=types.NCHW, output_dtype=types.FLOAT)
-        pipeline1.set_outputs(transposed_output, label_output)
+        transposed_output = fn.transpose(normalized_output, perm=[2,0,1], output_layout=types.NCHW, output_dtype=types.FLOAT)
+        val_pipeline.set_outputs(transposed_output, label_output)
 
-    pipeline1.build()
+    val_pipeline.build()
     
     numpyIteratorPipeline = ROCALNumpyIterator(pipeline, device='cpu' if rocal_cpu else 'gpu')
     print(len(numpyIteratorPipeline))
-    valNumpyIteratorPipeline = ROCALNumpyIterator(pipeline1, device='cpu' if rocal_cpu else 'gpu')
+    valNumpyIteratorPipeline = ROCALNumpyIterator(val_pipeline, device='cpu' if rocal_cpu else 'gpu')
     print(len(valNumpyIteratorPipeline))
     cnt = 0
     for epoch in range(2):
