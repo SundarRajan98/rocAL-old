@@ -29,6 +29,84 @@ import amd.rocal.types as types
 import ctypes
 
 
+class ROCALNumpyIterator(object):
+    def __init__(self, pipeline, tensor_dtype=types.FLOAT, device="cpu", device_id=0, return_roi=False):
+        self.loader = pipeline
+        self.tensor_dtype = tensor_dtype
+        self.device = device
+        self.device_id = device_id
+        self.output_memory_type = self.loader._output_memory_type
+        self.output_list = None
+        self.batch_size = self.loader._batch_size
+        self.return_roi = return_roi
+        print("self.device", self.device)
+        self.len = b.getRemainingImages(self.loader._handle)
+
+    def next(self):
+        return self.__next__()
+
+    def __next__(self):
+        if self.loader.rocal_run() != 0:
+            raise StopIteration
+        self.output_tensor_list = self.loader.get_output_tensors()
+
+        if self.output_list is None:
+            # Output list used to store pipeline outputs - can support multiple augmentation outputs
+            self.output_list = []
+            for i in range(len(self.output_tensor_list)):
+                dimensions = self.output_tensor_list[i].dimensions()
+                if self.return_roi:
+                    self.num_dims = len(dimensions) - 1
+                    self.roi_array = np.zeros(self.batch_size * self.num_dims * 2, dtype=np.uint32)
+                    self.output_tensor_list[i].copy_roi(self.roi_array)
+                    self.max_roi_size = np.zeros(self.num_dims, dtype=np.uint32)
+                    for j in range(self.batch_size):
+                        index = j * self.num_dims * 2
+                        roi_size = self.roi_array[index + self.num_dims : index + self.num_dims * 2] - self.roi_array[index : index + self.num_dims]
+                        self.max_roi_size = np.maximum(roi_size, self.max_roi_size)
+                if self.device == "cpu":
+                    torch_dtype = self.output_tensor_list[i].dtype()
+                    output = torch.empty(
+                        dimensions, dtype=getattr(torch, torch_dtype))
+                else:
+                    torch_gpu_device = torch.device('cuda', self.device_id)
+                    torch_dtype = self.output_tensor_list[i].dtype()
+                    output = torch.empty(dimensions, dtype=getattr(
+                        torch, torch_dtype), device=torch_gpu_device)
+
+                self.output_tensor_list[i].copy_data(ctypes.c_void_p(
+                    output.data_ptr()), self.output_memory_type)
+                self.output_list.append(output)
+        else:
+            for i in range(len(self.output_tensor_list)):
+                if self.return_roi:
+                    self.output_tensor_list[i].copy_roi(self.roi_array)
+                    self.max_roi_size = np.zeros(self.num_dims, dtype=np.uint32)
+                    for j in range(self.batch_size):
+                        index = j * self.num_dims * 2
+                        roi_size = self.roi_array[index + self.num_dims : index + self.num_dims * 2] - self.roi_array[index : index + self.num_dims]
+                        self.max_roi_size = np.maximum(roi_size, self.max_roi_size)
+                self.output_tensor_list[i].copy_data(ctypes.c_void_p(
+                    self.output_list[i].data_ptr()), self.output_memory_type)
+        if self.return_roi:
+            roi_output_list = []
+            for i in range(len(self.output_list)):
+                roi_output_list.append(self.output_list[i][:, :self.max_roi_size[0], :self.max_roi_size[1], :self.max_roi_size[2], :self.max_roi_size[3]])
+            return roi_output_list
+        return self.output_list
+
+    def reset(self):
+        b.rocalResetLoaders(self.loader._handle)
+
+    def __iter__(self):
+        return self
+
+    def __len__(self):
+        return self.len
+
+    def __del__(self):
+        b.rocalRelease(self.loader._handle)
+
 class ROCALGenericIterator(object):
     """!Iterator for processing data
 
@@ -59,6 +137,14 @@ class ROCALGenericIterator(object):
         self.output_memory_type = self.loader._output_memory_type
         self.iterator_length = b.getRemainingImages(self.loader._handle)
         self.display = display
+        self.batch_size = pipeline._batch_size
+        if self.loader._is_external_source_operator:
+            self.eos = False
+            self.index = 0
+            self.num_batches = self.loader._external_source.n // self.batch_size if self.loader._external_source.n % self.batch_size == 0 else (
+                self.loader._external_source.n // self.batch_size + 1)
+        else:
+            self.num_batches = None
         if self.loader._name is None:
             self.loader._name = self.loader._reader
 
@@ -66,6 +152,39 @@ class ROCALGenericIterator(object):
         return self.__next__()
 
     def __next__(self):
+        if (self.loader._is_external_source_operator):
+            if (self.index + 1) == self.num_batches:
+                self.eos = True
+            if (self.index + 1) <= self.num_batches:
+                data_loader_source = next(self.loader._external_source)
+                # Extract all data from the source
+                images_list = data_loader_source[0] if (self.loader._external_source_mode == types.EXTSOURCE_FNAME) else []
+                input_buffer = data_loader_source[0] if (self.loader._external_source_mode != types.EXTSOURCE_FNAME) else []
+                labels_data = data_loader_source[1] if (len(data_loader_source) > 1) else None
+                roi_height = data_loader_source[2] if (len(data_loader_source) > 2) else []
+                roi_width = data_loader_source[3] if (len(data_loader_source) > 3) else []
+                if (len(data_loader_source) == 6 and self.loader._external_source_mode == types.EXTSOURCE_RAW_UNCOMPRESSED):
+                    decoded_height = data_loader_source[4]
+                    decoded_width = data_loader_source[5]
+                else:
+                    decoded_height = self.loader._external_source_user_given_height
+                    decoded_width = self.loader._external_source_user_given_width
+
+                kwargs_pybind = {
+                    "handle": self.loader._handle,
+                    "source_input_images": images_list,
+                    "labels": labels_data,
+                    "input_batch_buffer": input_buffer,
+                    "roi_width": roi_width,
+                    "roi_height": roi_height,
+                    "decoded_width": decoded_width,
+                    "decoded_height": decoded_height,
+                    "channels": 3,
+                    "external_source_mode": self.loader._external_source_mode,
+                    "rocal_tensor_layout": types.NCHW,
+                    "eos": self.eos}
+                b.externalSourceFeedInput(*(kwargs_pybind.values()))
+            self.index = self.index + 1
         if self.loader.rocal_run() != 0:
             raise StopIteration
         else:
@@ -144,6 +263,11 @@ class ROCALGenericIterator(object):
 
             return self.output_list, self.bb_padded, self.labels_padded
 
+        elif self.loader._is_external_source_operator:
+            self.labels = self.loader.get_image_labels()
+            self.labels_tensor = self.labels_tensor.copy_(
+                torch.from_numpy(self.labels)).long()
+            return self.output_list, self.labels_tensor
         else:
             if self.loader._one_hot_encoding:
                 self.loader.get_one_hot_encoded_labels(

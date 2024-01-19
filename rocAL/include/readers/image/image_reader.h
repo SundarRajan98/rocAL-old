@@ -29,6 +29,7 @@ THE SOFTWARE.
 #include <lmdb.h>
 #include "meta_data_reader.h"
 #include "video_properties.h"
+#include "tensor.h"
 
 #define CHECK_LMDB_RETURN_STATUS(status)                                                          \
     do {                                                                                          \
@@ -47,6 +48,15 @@ enum class StorageType {
     SEQUENCE_FILE_SYSTEM = 6,
     MXNET_RECORDIO = 7,
     VIDEO_FILE_SYSTEM = 8,
+    EXTERNAL_FILE_SOURCE = 9,      // to support reading from external source
+    NUMPY_DATA = 10
+};
+
+enum class ExternalSourceFileMode {
+    FILENAME = 0,
+    RAWDATA_COMPRESSED = 1,
+    RAWDATA_UNCOMPRESSED = 2,
+    NONE = 3,
 };
 
 struct ReaderConfig {
@@ -71,6 +81,9 @@ struct ReaderConfig {
     void set_sequence_length(unsigned sequence_length) { _sequence_length = sequence_length; }
     void set_frame_step(unsigned step) { _sequence_frame_step = step; }
     void set_frame_stride(unsigned stride) { _sequence_frame_stride = stride; }
+    void set_external_filemode(ExternalSourceFileMode mode) { _file_mode = mode; }
+    void set_files(const std::vector<std::string> &files) { _files = files; }
+    void set_seed(unsigned seed) { _seed = seed; }
     size_t get_shard_count() { return _shard_count; }
     size_t get_shard_id() { return _shard_id; }
     size_t get_cpu_num_threads() { return _cpu_num_threads; }
@@ -78,7 +91,9 @@ struct ReaderConfig {
     size_t get_sequence_length() { return _sequence_length; }
     size_t get_frame_step() { return _sequence_frame_step; }
     size_t get_frame_stride() { return _sequence_frame_stride; }
+    std::vector<std::string> get_files() { return _files; }
     std::string path() { return _path; }
+    unsigned seed() { return _seed; }
 #ifdef ROCAL_VIDEO
     void set_video_properties(VideoProperties video_prop) { _video_prop = video_prop; }
     VideoProperties get_video_properties() { return _video_prop; }
@@ -88,6 +103,7 @@ struct ReaderConfig {
     void set_file_prefix(const std::string &prefix) { _file_prefix = prefix; }
     std::string file_prefix() { return _file_prefix; }
     std::shared_ptr<MetaDataReader> meta_data_reader() { return _meta_data_reader; }
+    ExternalSourceFileMode mode() { return _file_mode; }
 
    private:
     StorageType _type = StorageType::FILE_SYSTEM;
@@ -105,6 +121,9 @@ struct ReaderConfig {
     bool _loop = false;
     std::string _file_prefix = "";  //!< to read only files with prefix. supported only for cifar10_data_reader and tf_record_reader
     std::shared_ptr<MetaDataReader> _meta_data_reader = nullptr;
+    ExternalSourceFileMode _file_mode = ExternalSourceFileMode::NONE;
+    std::vector<std::string> _files;
+    unsigned _seed = 0;
 #ifdef ROCAL_VIDEO
     VideoProperties _video_prop;
 #endif
@@ -120,6 +139,27 @@ struct ImageRecordIOHeader {
                            *  image_id[0] is used to store image id
                            */
 };
+
+struct NumpyHeaderData {
+    public:
+    std::vector<unsigned> _shape;
+    RocalTensorDataType _type_info;
+    bool _fortran_order = false;
+    int64_t _data_offset = 0;
+
+    RocalTensorDataType type() const { return _type_info; };
+
+    size_t size() const {
+        size_t num_elements = 1;
+        for (const auto& dim: _shape)
+            num_elements *= dim;
+        return num_elements;
+    };
+
+    size_t nbytes() const { return tensor_data_size(_type_info) * size(); }
+    std::vector<unsigned> shape() const { return _shape; }
+};
+
 class Reader {
    public:
     enum class Status {
@@ -148,6 +188,10 @@ class Reader {
 
     //! Copies the data of the opened item to the buf
     virtual size_t read_data(unsigned char *buf, size_t read_size) = 0;
+
+    virtual const NumpyHeaderData get_numpy_header_data() { return {}; }
+
+    virtual size_t read_numpy_data(void *buf, size_t read_size, std::vector<size_t> max_shape) { return 0; }
 
     //! Closes the opened item
     virtual int close() = 0;
