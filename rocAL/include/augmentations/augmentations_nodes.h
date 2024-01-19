@@ -55,3 +55,8 @@ THE SOFTWARE.
 #include "node_copy.h"
 #include "node_nop.h"
 #include "node_sequence_rearrange.h"
+#include "node_gaussian_noise.h"
+#include "node_slice.h"
+#include "node_transpose.h"
+#include "node_normalize.h"
+#include "node_cast.h"
