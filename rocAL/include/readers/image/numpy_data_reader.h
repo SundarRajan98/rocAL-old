@@ -26,6 +26,7 @@ THE SOFTWARE.
 #include <memory>
 #include <string>
 #include <vector>
+#include <mutex>
 
 #include "commons.h"
 #include "image_reader.h"

@@ -426,6 +426,8 @@ MasterGraph::reset() {
 
 size_t
 MasterGraph::remaining_count() {
+    if (!_external_source_eos && _external_source_reader)
+        return _user_batch_size;
     return (_remaining_count >= 0) ? _remaining_count : 0;
 }
 
@@ -437,7 +439,7 @@ MasterGraph::mem_type() {
 Timing
 MasterGraph::timing() {
     Timing t = _loader_module->timing();
-    t.image_process_time += _process_time.get_timing();
+    t.process_time += _process_time.get_timing();
     t.copy_to_output += _convert_time.get_timing();
     t.bb_process_time += _bencode_time.get_timing();
     return t;
@@ -874,7 +876,7 @@ MasterGraph::get_output_tensors() {
         _output_tensor_list[i]->set_roi(roi_ptr[i]);
     }
     return &_output_tensor_list;
-    }
+}
 
 void MasterGraph::output_routine() {
     INFO("Output routine started with " + TOSTR(_remaining_count) + " to load");
@@ -961,7 +963,7 @@ void MasterGraph::output_routine() {
             }
             if (_is_box_iou_matcher) {
                 int *matches_write_buffer = reinterpret_cast<int *>(_ring_buffer.get_meta_write_buffers()[2]);
-                _meta_data_graph->update_box_iou_matcher(&_anchors, matches_write_buffer, output_meta_data, _criteria, _high_threshold, _low_threshold, _allow_low_quality_matches);
+                _meta_data_graph->update_box_iou_matcher(_iou_matcher_info, matches_write_buffer, output_meta_data);
             }
             _bencode_time.end();
 #ifdef ROCAL_VIDEO
@@ -1005,8 +1007,7 @@ void MasterGraph::stop_processing() {
         _output_thread.join();
 }
 
-std::vector<rocalTensorList *> MasterGraph::create_coco_meta_data_reader(const char *source_path, bool is_output, MetaDataReaderType reader_type, MetaDataType metadata_type, bool ltrb_bbox, bool is_box_encoder,
-                                                                         bool avoid_class_remapping, bool aspect_ratio_grouping, bool is_box_iou_matcher, float sigma, unsigned pose_output_width, unsigned pose_output_height) {
+std::vector<rocalTensorList *> MasterGraph::create_coco_meta_data_reader(const char *source_path, bool is_output, MetaDataReaderType reader_type, MetaDataType metadata_type, bool ltrb_bbox, bool is_box_encoder, bool avoid_class_remapping, bool aspect_ratio_grouping, bool is_box_iou_matcher, float sigma, unsigned pose_output_width, unsigned pose_output_height) {
     if (_meta_data_reader)
         THROW("A metadata reader has already been created")
     if (_augmented_meta_data)
@@ -1362,16 +1363,16 @@ const std::pair<ImageNameBatch, pMetaDataBatch> &MasterGraph::meta_data() {
     return _ring_buffer.get_meta_data();
 }
 
-void MasterGraph::box_iou_matcher(std::vector<float> &anchors, float criteria,
+void MasterGraph::box_iou_matcher(std::vector<float> &anchors,
                                   float high_threshold, float low_threshold,
                                   bool allow_low_quality_matches) {
     if (!_is_box_iou_matcher)
         THROW("Box IOU matcher variable not set cannot return matched idx")
-    _num_anchors = anchors.size() / 4;
-    _anchors = anchors;
-    _high_threshold = high_threshold;
-    _low_threshold = low_threshold;
-    _allow_low_quality_matches = allow_low_quality_matches;
+    _anchors = anchors;                     // Uses existing _anchors variable used for box encoder
+    _iou_matcher_info.anchors = &_anchors;
+    _iou_matcher_info.high_threshold = high_threshold;
+    _iou_matcher_info.low_threshold = low_threshold;
+    _iou_matcher_info.allow_low_quality_matches = allow_low_quality_matches;
 }
 
 size_t MasterGraph::bounding_box_batch_count(pMetaDataBatch meta_data_batch) {
@@ -1383,6 +1384,8 @@ size_t MasterGraph::bounding_box_batch_count(pMetaDataBatch meta_data_batch) {
 }
 
 TensorList *MasterGraph::labels_meta_data() {
+    if (_external_source_reader)
+        return &_labels_tensor_list;
     if (_ring_buffer.level() == 0)
         THROW("No meta data has been loaded")
     auto meta_data_buffers = (unsigned char *)_ring_buffer.get_meta_read_buffers()[0];  // Get labels buffer from ring buffer
@@ -1619,4 +1622,25 @@ MasterGraph::get_bbox_encoded_buffers(size_t num_encoded_boxes) {
         bbox_encoded_output.emplace_back(&_bbox_tensor_list);
     }
     return bbox_encoded_output;
+}
+
+void MasterGraph::feed_external_input(const std::vector<std::string>& input_images_names, bool is_labels, const std::vector<unsigned char *>& input_buffer,
+                                      const std::vector<ROIxywh>& roi_xywh, unsigned int max_width, unsigned int max_height, unsigned int channels,
+                                      ExternalSourceFileMode mode, RocalTensorlayout layout, bool eos) {
+    _external_source_eos = eos;
+    _loader_module->feed_external_input(input_images_names, input_buffer, roi_xywh, max_width, max_height, channels, mode, eos);
+
+    if (is_labels) {
+        if (_labels_tensor_list.size() == 0) {  // Labels tensor list is initialized only once for the pipeline
+            std::vector<size_t> dims = {1};
+            auto default_labels_info = TensorInfo(std::move(dims), _mem_type, RocalTensorDataType::INT32);
+            default_labels_info.set_metadata();
+
+            for (unsigned i = 0; i < _user_batch_size; i++) {
+                auto info = default_labels_info;
+                _labels_tensor_list.push_back(new Tensor(info));
+            }
+            _metadata_output_tensor_list.emplace_back(&_labels_tensor_list);
+        }
+    }
 }
