@@ -24,9 +24,9 @@ THE SOFTWARE.
 #include <dirent.h>
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
-#include <mutex>
 
 #include "commons.h"
 #include "image_reader.h"
@@ -102,23 +102,23 @@ class NumpyDataReader : public Reader {
     size_t _file_count_all_shards;
     std::mutex _cache_mutex_;
     std::map<std::string, NumpyHeaderData> _header_cache_;
-    const RocalTensorDataType TypeFromNumpyStr(const std::string& format);
-    inline void SkipSpaces(const char*& ptr);
-    void ParseHeaderContents(NumpyHeaderData& target, const std::string& header);
+    const RocalTensorDataType get_numpy_dtype(const std::string& format);
+    inline void ignore_spaces(const char*& ptr);
+    void decode_header(NumpyHeaderData& target, const std::string& header);
     template <size_t N>
-    void Skip(const char*& ptr, const char (&what)[N]);
+    void skip_string(const char*& ptr, const char (&what)[N]);
     template <size_t N>
-    bool TrySkip(const char*& ptr, const char (&what)[N]);
+    bool check_and_skip_string(const char*& ptr, const char (&what)[N]);
     template <size_t N>
-    void SkipFieldName(const char*& ptr, const char (&name)[N]);
+    void skip_field(const char*& ptr, const char (&name)[N]);
     template <typename T = int64_t>
-    T ParseInteger(const char*& ptr);
-    std::string ParseStringValue(const char*& input, char delim_start = '\'', char delim_end = '\'');
-    void ParseHeader(NumpyHeaderData& parsed_header, std::string file_path);
+    T parse_int(const char*& ptr);
+    std::string read_dtype_string(const char*& input, char delim_start = '\'', char delim_end = '\'');
+    void read_header(NumpyHeaderData& parsed_header, std::string file_path);
     template <typename T>
-    size_t ParseNumpyData(T* buf, std::vector<unsigned> strides, std::vector<unsigned> shapes, unsigned dim = 0);
-    bool GetFromCache(const std::string& file_name, NumpyHeaderData& target);
-    void UpdateCache(const std::string& file_name, const NumpyHeaderData& value);   
+    size_t copy_array_data(T* buf, std::vector<unsigned> strides, std::vector<unsigned> shapes, unsigned dim = 0);
+    bool get_cached_header(const std::string& file_name, NumpyHeaderData& target);
+    void update_header_cache(const std::string& file_name, const NumpyHeaderData& value);
     void incremenet_read_ptr();
     int release();
     size_t get_file_shard_id();
