@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2019 - 2022 Advanced Micro Devices, Inc. All rights reserved.
+Copyright (c) 2019 - 2023 Advanced Micro Devices, Inc. All rights reserved.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -150,6 +150,10 @@ class TensorInfo {
             dims_mapping = {0, 1, 4, 2, 3};
         } else if (input_layout == RocalTensorlayout::NFCHW && output_layout == RocalTensorlayout::NFHWC) {
             dims_mapping = {0, 1, 3, 4, 2};
+        } else if (input_layout == RocalTensorlayout::NCDHW && output_layout == RocalTensorlayout::NDHWC) {
+            dims_mapping = {0, 2, 3, 4, 1};
+        } else if (input_layout == RocalTensorlayout::NDHWC && output_layout == RocalTensorlayout::NCDHW) {
+            dims_mapping = {0, 4, 1, 2, 3};
         } else {
             THROW("Invalid layout conversion")
         }
@@ -177,9 +181,19 @@ class TensorInfo {
                 _max_shape[0] = _dims.at(4);
                 _max_shape[1] = _dims.at(3);
                 _channels = _dims.at(2);
+            } else if (_layout == RocalTensorlayout::NDHWC) {
+                _is_image = false;
+                _max_shape.resize(4);
+                _max_shape.assign(_dims.begin() + 1, _dims.end());
+                _channels = _dims.at(4);
+            } else if (_layout == RocalTensorlayout::NCDHW) {
+                _is_image = false;
+                _max_shape.resize(4);
+                _max_shape.assign(_dims.begin() + 1, _dims.end());
+                _channels = _dims.at(1);
             }
-        } else {                                                             // For other tensors
-            if (!_max_shape.size()) _max_shape.resize(_num_of_dims - 1, 0);  // Since 2 values will be stored in the vector
+        } else {
+            if (!_max_shape.size()) _max_shape.resize(_num_of_dims - 1, 0);
             _max_shape.assign(_dims.begin() + 1, _dims.end());
         }
         reset_tensor_roi_buffers();
@@ -193,6 +207,11 @@ class TensorInfo {
             modify_strides();
         }
         _layout = layout;
+        if (_layout == RocalTensorlayout::NHWC || _layout == RocalTensorlayout::NDHWC) {
+            _channels = _dims.back();
+        } else if (_layout == RocalTensorlayout::NCHW || _layout == RocalTensorlayout::NCDHW) {
+            _channels = _dims.at(1);
+        }
     }
     void set_dims(std::vector<size_t>& new_dims) {
         if (_num_of_dims == new_dims.size()) {
@@ -303,7 +322,13 @@ class Tensor : public rocalTensor {
     void* buffer() { return _mem_handle; }
     vx_tensor handle() { return _vx_handle; }
     vx_context context() { return _context; }
-    void set_mem_handle(void* buffer) { _mem_handle = buffer; }
+    void set_mem_handle(void* buffer) override {
+        if (buffer)
+            _mem_handle = buffer;
+        else {
+            THROW("Invalid buffer pointer passed")
+        }
+    }
 #if ENABLE_OPENCL
     unsigned copy_data(cl_command_queue queue, unsigned char* user_buffer, bool sync);
     unsigned copy_data(cl_command_queue queue, cl_mem user_buffer, bool sync);
@@ -331,7 +356,8 @@ class Tensor : public rocalTensor {
     int create_from_handle(vx_context context);
     int create_virtual(vx_context context, vx_graph graph);
     bool is_handle_set() { return (_vx_handle != 0); }
-    void set_dims(std::vector<size_t> dims) { _info.set_dims(dims); }
+    void set_dims(std::vector<size_t> dims) override { _info.set_dims(dims); }
+    void set_layout(RocalTensorlayout layout) { _info.set_tensor_layout(layout); }
     unsigned num_of_dims() override { return _info.num_of_dims(); }
     unsigned batch_size() override { return _info.batch_size(); }
     std::vector<size_t> dims() override { return _info.dims(); }

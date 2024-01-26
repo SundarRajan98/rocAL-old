@@ -32,6 +32,7 @@ THE SOFTWARE.
 
 #include "exception.h"
 #include "log.h"
+#include "filesystem.h"
 
 // Calculated from the largest resize shorter dimension in imagenet validation dataset
 #define MAX_ASPECT_RATIO 6.0f
@@ -45,6 +46,8 @@ enum class RocalTensorlayout {
     NCHW,
     NFHWC,
     NFCHW,
+    NDHWC,
+    NCDHW,
     NONE
 };
 
@@ -104,6 +107,15 @@ enum class RocalROIType {
     XYWH
 };
 
+/*! \brief Tensor 3D ROI type
+ *
+ * currently supports following formats
+ */
+enum class Rocal3DROIType {
+    LTFRBB = 0,
+    XYZWHD
+};
+
 /*! \brief Tensor ROI in LTRB format
  *
  */
@@ -149,4 +161,7 @@ struct Timing {
     long long unsigned label_load_time = 0;
     long long unsigned bb_load_time = 0;
     long long unsigned mask_load_time = 0;
+    long long unsigned video_read_time= 0;
+    long long unsigned video_decode_time= 0;
+    long long unsigned video_process_time= 0;
 };

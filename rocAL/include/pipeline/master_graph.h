@@ -37,6 +37,8 @@ THE SOFTWARE.
 #include "node_image_loader_single_shard.h"
 #include "node_video_loader.h"
 #include "node_video_loader_single_shard.h"
+#include "node_numpy_loader.h"
+#include "node_numpy_loader_single_shard.h"
 #include "ring_buffer.h"
 #include "timing_debug.h"
 #if ENABLE_HIP
@@ -134,6 +136,10 @@ class MasterGraph {
     void set_sequence_reader_output() { _is_sequence_reader_output = true; }
     void set_sequence_batch_size(size_t sequence_length) { _sequence_batch_size = _user_batch_size * sequence_length; }
     std::vector<rocalTensorList *> get_bbox_encoded_buffers(size_t num_encoded_boxes);
+    void feed_external_input(const std::vector<std::string>& input_images_names, bool labels, const std::vector<unsigned char *>& input_buffer,
+                             const std::vector<ROIxywh>& roi_xywh, unsigned int max_width, unsigned int max_height, unsigned int channels, ExternalSourceFileMode mode,
+                             RocalTensorlayout layout, bool eos);
+    void set_external_source_reader_flag() { _external_source_reader = true; }
     size_t bounding_box_batch_count(pMetaDataBatch meta_data_batch);
 #if ENABLE_OPENCL
     cl_command_queue get_ocl_cmd_q() { return _device.resources()->cmd_queue; }
@@ -208,6 +214,8 @@ class MasterGraph {
     bool _offset;                                                                 // Returns normalized offsets ((encoded_bboxes*scale - anchors*scale) - mean) / stds in EncodedBBoxes that use std and the mean and scale arguments if offset="True"
     std::vector<float> _means, _stds;                                             //_means:  [x y w h] mean values for normalization _stds: [x y w h] standard deviations for offset normalization.
     bool _augmentation_metanode = false;
+    bool _external_source_eos = false;     // If last batch, _external_source_eos will true
+    bool _external_source_reader = false;  // Set to true if external source reader on
     // box IoU matcher variables
     bool _is_box_iou_matcher = false;                                             // bool variable to set the box iou matcher
     BoxIouMatcherInfo _iou_matcher_info;
@@ -374,6 +382,42 @@ inline std::shared_ptr<VideoLoaderSingleShardNode> MasterGraph::add_node(const s
     auto node = std::make_shared<VideoLoaderSingleShardNode>(outputs[0], (void *)_device.resources());
 #else
     auto node = std::make_shared<VideoLoaderSingleShardNode>(outputs[0], nullptr);
+#endif
+    _loader_module = node->get_loader_module();
+    _loader_module->set_prefetch_queue_depth(_prefetch_queue_depth);
+    _root_nodes.push_back(node);
+    for (auto &output : outputs)
+        _tensor_map.insert(std::make_pair(output, node));
+
+    return node;
+}
+
+template <>
+inline std::shared_ptr<NumpyLoaderNode> MasterGraph::add_node(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
+    if (_loader_module)
+        THROW("A loader already exists, cannot have more than one loader")
+#if ENABLE_HIP || ENABLE_OPENCL
+    auto node = std::make_shared<NumpyLoaderNode>(outputs[0], (void *)_device.resources());
+#else
+    auto node = std::make_shared<NumpyLoaderNode>(outputs[0], nullptr);
+#endif
+    _loader_module = node->get_loader_module();
+    _loader_module->set_prefetch_queue_depth(_prefetch_queue_depth);
+    _root_nodes.push_back(node);
+    for (auto &output : outputs)
+        _tensor_map.insert(std::make_pair(output, node));
+
+    return node;
+}
+
+template <>
+inline std::shared_ptr<NumpyLoaderSingleShardNode> MasterGraph::add_node(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
+    if (_loader_module)
+        THROW("A loader already exists, cannot have more than one loader")
+#if ENABLE_HIP || ENABLE_OPENCL
+    auto node = std::make_shared<NumpyLoaderSingleShardNode>(outputs[0], (void *)_device.resources());
+#else
+    auto node = std::make_shared<NumpyLoaderSingleShardNode>(outputs[0], nullptr);
 #endif
     _loader_module = node->get_loader_module();
     _loader_module->set_prefetch_queue_depth(_prefetch_queue_depth);

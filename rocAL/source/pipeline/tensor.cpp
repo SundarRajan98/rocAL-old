@@ -22,7 +22,7 @@ THE SOFTWARE.
 */
 
 #include <cstdio>
-#if !ENABLE_HIP
+#if ENABLE_OPENCL
 #include <CL/cl.h>
 #endif
 #include <vx_ext_amd.h>
@@ -77,6 +77,10 @@ vx_enum interpret_tensor_data_type(RocalTensorDataType data_type) {
             return VX_TYPE_FLOAT16;
         case RocalTensorDataType::UINT8:
             return VX_TYPE_UINT8;
+        case RocalTensorDataType::UINT32:
+            return VX_TYPE_UINT32;
+        case RocalTensorDataType::INT32:
+            return VX_TYPE_INT32;
         default:
             THROW("Unsupported Tensor type " + TOSTR(data_type))
     }
@@ -110,7 +114,7 @@ void TensorInfo::reset_tensor_roi_buffers() {
     unsigned *roi_buf;
     auto roi_no_of_dims = _is_image ? 2 : (_num_of_dims - 1);
     auto roi_size = (_layout == RocalTensorlayout::NFCHW || _layout == RocalTensorlayout::NFHWC) ? _dims[0] * _dims[1] : _batch_size;  // For Sequences pre allocating the ROI to N * F to replicate in OpenVX extensions
-    allocate_host_or_pinned_mem((void **)&roi_buf, roi_size * roi_no_of_dims * 2 * sizeof(unsigned), _mem_type);                       // 2 denotes, one coordinate each for begin and end
+    allocate_host_or_pinned_mem((void **)&roi_buf, roi_size * roi_no_of_dims * 2 * sizeof(unsigned), _mem_type);
     _roi.set_ptr(roi_buf, _mem_type, roi_size, roi_no_of_dims);
     if (_is_image) {
         Roi2DCords *roi = _roi.get_2D_roi();
@@ -119,7 +123,10 @@ void TensorInfo::reset_tensor_roi_buffers() {
             roi[i].xywh.h = _max_shape.at(1);
         }
     } else {
-        // TODO - For other tensor types
+        for (unsigned i = 0; i < _batch_size; i++) {
+            unsigned *tensor_shape = _roi[i].end;
+            tensor_shape[i] = _max_shape[i];
+        }
     }
 }
 
@@ -212,15 +219,10 @@ void Tensor::update_tensor_roi(const std::vector<std::vector<uint32_t>> &shape) 
     for (unsigned i = 0; i < info().batch_size(); i++) {
         if (shape[i].size() != (info().num_of_dims() - 1))
             THROW("The number of dims to be updated and the num of dims of tensor info does not match")
-
+        
         unsigned *tensor_shape = _info.roi()[i].end;
-        for (unsigned d = 0; d < shape[i].size(); d++) {
-            if (shape[i][d] > max_shape[d]) {
-                WRN("Given ROI shape is larger than buffer shape for tensor[" + TOSTR(i) + "] " + TOSTR(shape[i][d]) + " > " + TOSTR(max_shape[d]))
-                tensor_shape[d] = max_shape[d];
-            } else {
-                tensor_shape[d] = shape[i][d];
-            }
+        for (unsigned j = 0; j < max_shape.size(); j++) {
+            tensor_shape[j] = shape[i][j] > max_shape[j] ? max_shape[j] : shape[i][j];
         }
     }
 }
